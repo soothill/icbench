@@ -1,0 +1,48 @@
+write me an s3 benchmarking tool called icbench in go that has the ability to bench mark get-object, head-object, put-object, put object retention
+modify the code to be able to run these test concurrently and provide detailed output of the performance and latency averages
+provide an option to give the output in a json format
+allow for configuring the object size in put requests
+allow for passing the s3 region as well
+use individual objects for all benchmarking
+do not delete the objects so they can be used by other tests add an option to cleanup the objects left behind
+allow the object size to be specified with a k or m suffice to indicate kbyte mbytes
+add a debug flag that shows in detail calls being made and where they fail
+only display the error codes not the request body
+do not prepend the url with the bucketname
+Please consider:
+
+- Error handling
+
+- Edge cases
+
+- Performance optimization
+
+- Best practices for go
+
+Please do not unnecessarily remove any comments or code.
+
+Generate the code with clear comments explaining the logic.
+
+implement exponential backoff when getting responses of overload from server
+
+the cleanup operation should also delete objects that have been created for get benchmarks
+
+add a delete all option that will delete all the objects in a bucket
+
+add a command to create objects in a bucket if they dont exist and use these objects when doing get tests and put object retention tests
+
+when performing get-object please reduce request rate when you get a 429 return
+
+add the ability to use environment variables for the access key and secret key
+
+make this code more efficent in the number of sockets being used
+
+make sure getobject code handles rate limiting correctly
+
+improve code to handle failed to get rate limit token and retry quota exceeded
+
+change the default url to be path style and allow for DNS naming to be an option
+
+set this option DisableLogOutputChecksumValidationSkipped to true when doing gets
+
+
