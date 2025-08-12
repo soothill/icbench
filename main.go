@@ -1,4 +1,3 @@
-
 package main
 
 import (
@@ -40,22 +39,22 @@ const (
 
 // Global flags and the shared S3 client instance.
 var (
-	endpointURL         string
-	accessKey           string
-	secretKey           string
-	region              string
-	bucket              string
-	objectKey           string
-	numRequests         int
-	concurrency         int
-	fileSizeStr         string
-	fileSize            int64
-	retentionMode       string
-	retainUntil         string
-	jsonOutput          bool
-	debug               bool
+	endpointURL           string
+	accessKey             string
+	secretKey             string
+	region                string
+	bucket                string
+	objectKey             string
+	numRequests           int
+	concurrency           int
+	fileSizeStr           string
+	fileSize              int64
+	retentionMode         string
+	retainUntil           string
+	jsonOutput            bool
+	debug                 bool
 	useVirtualHostedStyle bool
-	force               bool // For the delete-all command
+	force                 bool // For the delete-all command
 
 	// s3Client is a single, shared S3 client instance created once and reused
 	// across all commands to ensure efficient use of network sockets.
@@ -70,13 +69,13 @@ type operationResult struct {
 
 // BenchmarkResult defines the structure for JSON output
 type BenchmarkResult struct {
-	TotalRequests       int             `json:"totalRequests"`
-	SuccessfulRequests  int             `json:"successfulRequests"`
-	FailedRequests      int             `json:"failedRequests"`
-	TotalTimeSeconds    float64         `json:"totalTimeSeconds"`
-	RequestsPerSecond   float64         `json:"requestsPerSecond"`
-	Latency             LatencyStats    `json:"latency"`
-	Bandwidth           *BandwidthStats `json:"bandwidth,omitempty"`
+	TotalRequests      int             `json:"totalRequests"`
+	SuccessfulRequests int             `json:"successfulRequests"`
+	FailedRequests     int             `json:"failedRequests"`
+	TotalTimeSeconds   float64         `json:"totalTimeSeconds"`
+	RequestsPerSecond  float64         `json:"requestsPerSecond"`
+	Latency            LatencyStats    `json:"latency"`
+	Bandwidth          *BandwidthStats `json:"bandwidth,omitempty"`
 }
 
 // LatencyStats defines the structure for latency statistics in JSON output
@@ -166,6 +165,16 @@ var putObjectRetentionCmd = &cobra.Command{
 	Long:  "Benchmarks PutObjectRetention performance. It is recommended to run 'icbench prepare' first to create the objects.",
 	Run: func(cmd *cobra.Command, args []string) {
 		runBenchmark(cmd.Context(), benchmarkPutObjectRetention, "put-object-retention")
+	},
+}
+
+// getObjectRetentionCmd represents the get-object-retention command
+var getObjectRetentionCmd = &cobra.Command{
+	Use:   "get-object-retention",
+	Short: "Benchmark S3 GetObjectRetention performance on existing objects",
+	Long:  "Benchmarks GetObjectRetention performance. It is recommended to run 'icbench prepare' first to create the objects.",
+	Run: func(cmd *cobra.Command, args []string) {
+		runBenchmark(cmd.Context(), benchmarkGetObjectRetention, "get-object-retention")
 	},
 }
 
@@ -429,7 +438,7 @@ func runPrepare(ctx context.Context) {
 		fmt.Printf("Preparation complete. Successfully created %d objects.\n", createdCount)
 	} else {
 		result := map[string]interface{}{
-			"objectsCreated": createdCount,
+			"objectsCreated":  createdCount,
 			"objectsTargeted": numRequests,
 		}
 		jsonData, _ := json.MarshalIndent(result, "", "  ")
@@ -826,6 +835,20 @@ func benchmarkPutObjectRetention(ctx context.Context, client *s3.Client, key str
 	return operationResult{latency: latency, bytesTransferred: 0}, nil
 }
 
+// benchmarkGetObjectRetention performs the GetObjectRetention benchmark.
+func benchmarkGetObjectRetention(ctx context.Context, client *s3.Client, key string) (operationResult, error) {
+	start := time.Now()
+	_, err := client.GetObjectRetention(ctx, &s3.GetObjectRetentionInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	})
+	latency := time.Since(start)
+	if err != nil {
+		return operationResult{}, err
+	}
+	return operationResult{latency: latency, bytesTransferred: 0}, nil
+}
+
 func init() {
 	// Seed the math/rand package for jitter calculation.
 	mrand.Seed(time.Now().UnixNano())
@@ -861,6 +884,7 @@ func init() {
 	rootCmd.AddCommand(headObjectCmd)
 	rootCmd.AddCommand(putObjectCmd)
 	rootCmd.AddCommand(putObjectRetentionCmd)
+	rootCmd.AddCommand(getObjectRetentionCmd)
 	rootCmd.AddCommand(cleanupCmd)
 	rootCmd.AddCommand(deleteAllCmd)
 }
@@ -876,4 +900,3 @@ func main() {
 		os.Exit(1)
 	}
 }
-
