@@ -55,6 +55,7 @@ var (
 	debug                 bool
 	useVirtualHostedStyle bool
 	force                 bool // For the delete-all command
+	deleteBatchSize       int  // For delete-objects benchmark
 
 	// s3Client is a single, shared S3 client instance created once and reused
 	// across all commands to ensure efficient use of network sockets.
@@ -155,6 +156,26 @@ var putObjectCmd = &cobra.Command{
 	Short: "Benchmark S3 PutObject performance (creates new objects)",
 	Run: func(cmd *cobra.Command, args []string) {
 		runBenchmark(cmd.Context(), benchmarkPutObject, "put-object")
+	},
+}
+
+// deleteObjectCmd represents the delete-object command
+var deleteObjectCmd = &cobra.Command{
+	Use:   "delete-object",
+	Short: "Benchmark S3 DeleteObject performance on existing objects",
+	Long:  "Benchmarks DeleteObject performance. It is recommended to run 'icbench prepare' first to create the objects.",
+	Run: func(cmd *cobra.Command, args []string) {
+		runBenchmark(cmd.Context(), benchmarkDeleteObject, "delete-object")
+	},
+}
+
+// deleteObjectsCmd represents the delete-objects (batch) command
+var deleteObjectsCmd = &cobra.Command{
+	Use:   "delete-objects",
+	Short: "Benchmark S3 DeleteObjects performance using batch deletes",
+	Long:  "Benchmarks batch DeleteObjects performance over a dataset using the <prefix>-<i> key pattern created by 'icbench prepare'.",
+	Run: func(cmd *cobra.Command, args []string) {
+		runDeleteObjectsBenchmark(cmd.Context())
 	},
 }
 
@@ -849,6 +870,152 @@ func benchmarkGetObjectRetention(ctx context.Context, client *s3.Client, key str
 	return operationResult{latency: latency, bytesTransferred: 0}, nil
 }
 
+// benchmarkDeleteObject performs the DeleteObject benchmark.
+func benchmarkDeleteObject(ctx context.Context, client *s3.Client, key string) (operationResult, error) {
+	start := time.Now()
+	_, err := client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	})
+	latency := time.Since(start)
+	if err != nil {
+		return operationResult{}, err
+	}
+	return operationResult{latency: latency, bytesTransferred: 0}, nil
+}
+
+// runDeleteObjectsBenchmark benchmarks DeleteObjects in batches over numRequests keys.
+func runDeleteObjectsBenchmark(ctx context.Context) {
+	if bucket == "" || objectKey == "" {
+		log.Fatal("Bucket and key prefix must be provided for delete-objects")
+	}
+	batch := deleteBatchSize
+	if batch <= 0 || batch > s3DeleteBatchSize {
+		batch = s3DeleteBatchSize
+	}
+	// Build the list of keys to delete based on numRequests and prefix
+	objects := make([]types.ObjectIdentifier, 0, numRequests)
+	for i := 0; i < numRequests; i++ {
+		k := fmt.Sprintf("%s-%d", objectKey, i)
+		objects = append(objects, types.ObjectIdentifier{Key: aws.String(k)})
+	}
+
+	if !jsonOutput {
+		fmt.Printf("Starting delete-objects benchmark with %d objects, batch size %d, concurrency %d...\n", len(objects), batch, concurrency)
+	}
+
+	start := time.Now()
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, concurrency)
+	results := make(chan operationResult, (len(objects)+batch-1)/batch)
+	errs := make(chan error, (len(objects)+batch-1)/batch)
+
+	for i := 0; i < len(objects); i += batch {
+		if ctx.Err() != nil {
+			break
+		}
+		end := i + batch
+		if end > len(objects) {
+			end = len(objects)
+		}
+		b := objects[i:end]
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(objs []types.ObjectIdentifier) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			res, err := executeWithRetry(ctx, func() (operationResult, error) {
+				st := time.Now()
+				out, err := s3Client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+					Bucket: aws.String(bucket),
+					Delete: &types.Delete{Objects: objs},
+				})
+				lat := time.Since(st)
+				if err != nil {
+					return operationResult{}, err
+				}
+				// Count only successfully deleted in bytesTransferred as zero; use latency only
+				if len(out.Errors) > 0 && (!jsonOutput || debug) {
+					for _, e := range out.Errors {
+						log.Printf("ERROR: Could not delete %s: %s", aws.ToString(e.Key), aws.ToString(e.Message))
+					}
+				}
+				return operationResult{latency: lat, bytesTransferred: 0}, nil
+			})
+			if err != nil {
+				errs <- err
+			} else {
+				results <- res
+			}
+		}(b)
+	}
+	wg.Wait()
+	close(results)
+	close(errs)
+
+	// aggregate
+	var lats []time.Duration
+	var errCount int
+	var totalLatency time.Duration
+	for r := range results {
+		lats = append(lats, r.latency)
+		totalLatency += r.latency
+	}
+	for range errs {
+		errCount++
+	}
+	success := len(lats)
+	totalTime := time.Since(start)
+	var rps float64
+	var avg, min, max, p50, p90, p95, p99 time.Duration
+	if success > 0 {
+		rps = float64(success) / totalTime.Seconds()
+		avg = totalLatency / time.Duration(success)
+		sort.Slice(lats, func(i, j int) bool { return lats[i] < lats[j] })
+		min = lats[0]
+		max = lats[success-1]
+		p50 = lats[int(float64(success)*0.5)]
+		p90 = lats[int(float64(success)*0.9)]
+		p95 = lats[int(float64(success)*0.95)]
+		p99 = lats[int(float64(success)*0.99)]
+	}
+
+	if jsonOutput {
+		lat := LatencyStats{}
+		if success > 0 {
+			lat = LatencyStats{Average: avg.String(), Min: min.String(), Max: max.String(), P50: p50.String(), P90: p90.String(), P95: p95.String(), P99: p99.String()}
+		}
+		res := BenchmarkResult{
+			TotalRequests:      (len(objects) + batch - 1) / batch,
+			SuccessfulRequests: success,
+			FailedRequests:     errCount,
+			TotalTimeSeconds:   totalTime.Seconds(),
+			RequestsPerSecond:  rps,
+			Latency:            lat,
+		}
+		b, _ := json.MarshalIndent(res, "", "  ")
+		fmt.Println(string(b))
+	} else {
+		fmt.Println("\n--- Benchmark Results (delete-objects) ---")
+		fmt.Printf("Total Batches:       %d\n", (len(objects)+batch-1)/batch)
+		fmt.Printf("Successful Batches:  %d\n", success)
+		fmt.Printf("Failed Batches:      %d\n", errCount)
+		fmt.Printf("Total Time:          %v\n", totalTime)
+		if success > 0 {
+			fmt.Printf("Batches Per Second:  %.2f\n", rps)
+			fmt.Println("\n--- Latency Distribution ---")
+			fmt.Printf("Average: %v\n", avg)
+			fmt.Printf("Min:     %v\n", min)
+			fmt.Printf("Max:     %v\n", max)
+			fmt.Printf("p50:     %v\n", p50)
+			fmt.Printf("p90:     %v\n", p90)
+			fmt.Printf("p95:     %v\n", p95)
+			fmt.Printf("p99:     %v\n", p99)
+			fmt.Println("-------------------------")
+		}
+	}
+}
+
 func init() {
 	// Seed the math/rand package for jitter calculation.
 	mrand.Seed(time.Now().UnixNano())
@@ -887,6 +1054,11 @@ func init() {
 	rootCmd.AddCommand(getObjectRetentionCmd)
 	rootCmd.AddCommand(cleanupCmd)
 	rootCmd.AddCommand(deleteAllCmd)
+	rootCmd.AddCommand(deleteObjectCmd)
+	rootCmd.AddCommand(deleteObjectsCmd)
+
+	// flags for delete-objects
+	deleteObjectsCmd.Flags().IntVarP(&deleteBatchSize, "batch-size", "B", 1000, "Batch size for DeleteObjects (max 1000)")
 }
 
 func main() {

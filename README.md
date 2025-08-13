@@ -9,6 +9,8 @@ Supported benchmarks
 - put-object: upload new objects to measure write latency and MB/s
 - put-object-retention: set object lock retention on existing objects
 - get-object-retention: fetch object lock retention on existing objects
+- delete-object: delete existing objects individually to measure latency
+- delete-objects: batch delete existing objects to measure per-batch latency/RPS
 - cleanup: delete test objects by prefix
 - delete-all: delete every object in a bucket (destructive)
 
@@ -68,6 +70,17 @@ get-object — read existing objects
 - Example (json):
   `icbench get-object ... --json`
 
+delete-objects — batch delete existing objects
+- Purpose: Benchmark batch DeleteObjects using `<prefix>-<i>` keys; deletes objects created by prepare
+- Key flags: `-b, -k, -n, -c, -B`
+- Notes:
+  - Batch size max 1000; measures latency only (per-batch)
+  - Destructive: re-run `prepare` if you need objects again
+- Example (human):
+  `icbench delete-objects -b my-bucket -k bench/ic -n 2000 -c 200 -B 500`
+- Example (json):
+  `icbench delete-objects ... --json`
+
 head-object — metadata lookups
 - Purpose: Measure HEAD latency on existing objects (no bandwidth)
 - Key flags: `-b, -k, -n, -c`
@@ -93,6 +106,17 @@ get-object-retention — fetch object lock
 - Key flags: `-b, -k, -n, -c`
 - Example:
   `icbench get-object-retention -b my-bucket -k bench/ic -n 500 -c 50`
+
+delete-object — delete existing objects
+- Purpose: Measure latency and RPS of DeleteObject on existing keys using `<prefix>-<i>` pattern created by `prepare`. This removes the objects; re-run `prepare` if you need them again for read tests.
+- Key flags: `-b, -k, -n, -c`
+- Notes:
+  - Measures latency only (no bandwidth).
+  - Safe to run with high concurrency; tool retries transient errors with backoff.
+- Example (human):
+  `icbench delete-object -b my-bucket -k bench/ic -n 2000 -c 200`
+- Example (json):
+  `icbench delete-object ... --json`
 
 cleanup — delete by prefix
 - Purpose: Delete all objects that match `<prefix>-*`
